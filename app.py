@@ -8,6 +8,7 @@ from PIL import Image
 import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from google import genai
+from google.genai import types
 
 # ----------------- 1. Database Initialization -----------------
 def init_db():
@@ -52,7 +53,7 @@ if 'lot_no' not in st.session_state: st.session_state.lot_no = ""
 if 'metres' not in st.session_state: st.session_state.metres = ""
 if 'weight' not in st.session_state: st.session_state.weight = ""
 
-# Gemini OCR Function using JSON
+# Gemini OCR Function - Fully Encoding-Safe
 def parse_card_with_gemini(image_bytes):
     try:
         api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -61,28 +62,32 @@ def parse_card_with_gemini(image_bytes):
             return None
 
         client = genai.Client(api_key=api_key)
-        image = Image.open(io.BytesIO(image_bytes))
 
-        prompt = """
-        You are an expert OCR system for fabric warehouse cards.
-        Analyze the image and extract the text for these exact fields:
-        - "fabric": Name of the fabric (e.g. INTERLOCKP1, Single Jersey)
-        - "shade": Color or shade name (e.g. TEAL, Navy)
-        - "pc_no": Roll number or PC No (e.g. 6)
-        - "lot_no": Lot number (e.g. 0209)
-        - "metres": Length in meters or yards (e.g. 88)
-        - "weight": Weight in KGs, Net Weight NW or Gross Weight GW (e.g. 21.1)
+        # Pass image safely as bytes via types.Part to avoid PIL/ASCII encoding issues
+        image_part = types.Part.from_bytes(
+            data=image_bytes,
+            mime_type="image/jpeg"
+        )
 
-        Return ONLY a raw JSON object with these keys: "fabric", "shade", "pc_no", "lot_no", "metres", "weight".
-        Do not add Markdown backticks or extra text.
-        """
+        prompt_text = (
+            "Analyze this fabric card image and extract values for these fields:\n"
+            "- fabric: Fabric Name\n"
+            "- shade: Color or Shade\n"
+            "- pc_no: Roll or PC Number\n"
+            "- lot_no: Lot Number\n"
+            "- metres: Length or Meters\n"
+            "- weight: Weight in KGs\n\n"
+            "Respond ONLY with a JSON object containing keys: fabric, shade, pc_no, lot_no, metres, weight."
+        )
 
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[image, prompt]
+            contents=[image_part, prompt_text]
         )
+
+        raw_text = response.text.strip() if response and response.text else ""
         
-        raw_text = response.text.strip()
+        # Clean potential markdown formatting
         if raw_text.startswith("```json"):
             raw_text = raw_text.replace("```json", "").replace("```", "").strip()
         elif raw_text.startswith("```"):
@@ -90,8 +95,10 @@ def parse_card_with_gemini(image_bytes):
 
         data = json.loads(raw_text)
         return data
+
     except Exception as err:
-        st.error(f"Error reading tag image: {err}")
+        error_msg = str(err).encode('ascii', 'ignore').decode('ascii')
+        st.error(f"Error parsing image with Gemini: {error_msg}")
         return None
 
 # Export Inventory to Excel
@@ -199,7 +206,6 @@ if menu == "📸 Stock-In (Capture Roll)":
         image_bytes = img_file.getvalue()
         st.image(image_bytes, caption="Captured Tag Preview", use_column_width=True)
         
-        # Action button to trigger OCR explicitly
         if st.button("🔍 Extract Tag Data with Gemini OCR"):
             with st.spinner("Extracting data..."):
                 extracted = parse_card_with_gemini(image_bytes)
@@ -250,7 +256,6 @@ if menu == "📸 Stock-In (Capture Roll)":
             ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
             conn.commit()
             
-            # Clear inputs
             st.session_state.fabric = ""
             st.session_state.shade = ""
             st.session_state.pc_no = ""
