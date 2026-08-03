@@ -1,7 +1,6 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ----------------- 1. إعداد قاعدة بيانات المخزن -----------------
 def init_db():
@@ -38,18 +37,17 @@ init_db()
 st.set_page_config(
     page_title="نظام تتبع الأقمشة",
     page_icon="🧵",
-    layout="centered", # مخصص للعرض الرأسي على شاشات الموبايل
+    layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# تصميم وتنسيق مخصص CSS للموبايل
+# تنسيق عريض ومناسب للموبايل
 st.markdown("""
     <style>
-    /* تحسين العرض على الموبايل */
     .stButton>button {
         width: 100%;
         border-radius: 12px;
-        height: 3em;
+        height: 3.2em;
         font-weight: bold;
         font-size: 16px;
     }
@@ -62,13 +60,6 @@ st.markdown("""
         font-size: 24px;
         font-weight: bold;
         margin-bottom: 20px;
-    }
-    .card-box {
-        background-color: #f8f9fa;
-        padding: 15px;
-        border-radius: 12px;
-        border: 1px solid #e0e0e0;
-        margin-bottom: 15px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -94,87 +85,70 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
     
     st.markdown("---")
     
-    # اختيار طريقة التقاط/رفع الصورة
+    # اختيار طريقة تصوير/رفع الصورة
     source_type = st.radio(
-        "اختر طريقة إدخال صورة كارت التوب:",
-        ["📁 اختيار من المعرض (Gallery)", "📸 فتح الكاميرا الخلفية مباشرة"],
+        "اختر طريقة تصوير كارت التوب:",
+        ["📸 التقاط صورة مباشرة (الكاميرا)", "📁 اختيار صورة من المعرض (Gallery)"],
         horizontal=False
     )
     
     img_file = None
     
-    if "📁 اختيار من المعرض" in source_type:
-        img_file = st.file_uploader("اختر صورة من الجليري / الاستوديو", type=["jpg", "png", "jpeg", "webp"])
+    if "📸 التقاط صورة" in source_type:
+        # أداة الكاميرا المباشرة مع زر التقاط صريح
+        img_file = st.camera_input("اضغط الزر بالأسفل لالتقاط صورة الكارت")
     else:
-        # الكاميرا الخلفية إجبارياً عبر HTML5
-        html_camera_code = """
-        <div style="text-align: center; width: 100%;">
-            <video id="webcam" autoplay playsinline style="width: 100%; max-width: 350px; border: 2px solid #1E88E5; border-radius: 12px;"></video>
-            <br><br>
-            <button id="snap" style="background-color: #1E88E5; color: white; padding: 12px; width: 100%; border: none; border-radius: 10px; font-weight: bold; font-size: 16px;">
-                📸 التقاط صورة الكارت الآن
-            </button>
-            <canvas id="canvas" style="display:none;"></canvas>
-        </div>
+        # اختيار صورة من الاستوديو
+        img_file = st.file_uploader("اختر صورة الكارت من المعرض", type=["jpg", "png", "jpeg", "webp"])
 
-        <script>
-            const video = document.getElementById('webcam');
-            const canvas = document.getElementById('canvas');
-            const snap = document.getElementById('snap');
-
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } } })
-                .then((stream) => { video.srcObject = stream; })
-                .catch((err) => {
-                    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
-                        .then((stream) => { video.srcObject = stream; })
-                        .catch((error) => { console.log("Camera error: " + error); });
-                });
-
-            snap.addEventListener("click", () => {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                canvas.getContext('2d').drawImage(video, 0, 0);
-                alert("تم التقط الصورة من الكاميرا الخلفية بنجاح!");
-            });
-        </script>
-        """
-        components.html(html_camera_code, height=380)
-
-    # عرض المعاينة ورسالة نجاح التقاط الصورة
+    # معاينة الصورة عند التقاطها أو اختيارها
     if img_file is not None:
         st.image(img_file, caption="معاينة كارت التوب الملتقط", use_column_width=True)
-        st.success("✅ تم اختيار الصورة بنجاح! راجع البيانات وأكد الإضافة.")
+        st.success("✅ تم التقط/رفع الصورة بنجاح! راجع البيانات بالأسفل وأكد الحفظ.")
+
+    st.markdown("### 📝 بيانات التوب")
     
-    st.markdown("### 📝 تفاصيل بيانات التوب")
-    
-    with st.form("add_roll_form"):
-        fabric_name = st.text_input("اسم الخامة (Fabric)", value="Rosetta")
-        color_shade = st.text_input("اللون / الدرجة (Shade)", value="Scour")
+    # نموذج البيانات - جميع الخانات فارغة بشكل افتراضي
+    with st.form("add_roll_form", clear_on_submit=True):
+        fabric_name = st.text_input("اسم الخامة (Fabric)", value="", placeholder="مثال: Rosetta")
+        color_shade = st.text_input("اللون / الدرجة (Shade)", value="", placeholder="مثال: Scour")
         
         c1, c2 = st.columns(2)
         with c1:
-            pc_no = st.number_input("رقم التوب (PC NO.)", value=38, step=1)
-            metres = st.number_input("الأمتار (Metres)", value=118.5)
+            pc_no_input = st.text_input("رقم التوب (PC NO.)", value="", placeholder="مثال: 38")
+            metres_input = st.text_input("الأمتار (Metres)", value="", placeholder="مثال: 118.5")
         with c2:
-            lot_no = st.number_input("رقم اللوت (LOT NO.)", value=5, step=1)
-            weight_kg = st.number_input("الوزن (Kgs)", value=23.8)
+            lot_no_input = st.text_input("رقم اللوت (LOT NO.)", value="", placeholder="مثال: 5")
+            weight_input = st.text_input("الوزن (Kgs)", value="", placeholder="مثال: 23.8")
             
         st.markdown("<br>", unsafe_allow_html=True)
         submit_btn = st.form_submit_button("✅ تأكيد وحفظ التوب في المخزن")
         
         if submit_btn:
-            roll_id = f"ROLL-{selected_supplier[:3].upper()}-{pc_no}-L{lot_no}"
-            try:
-                cursor = conn.cursor()
-                cursor.execute('''
-                INSERT INTO inventory (roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')
-                ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg))
-                conn.commit()
-                st.balloons()
-                st.success(f"🎉 تم حفظ التوب كود ({roll_id}) بنجاح!")
-            except Exception as e:
-                st.error("⚠️ هذا التوب مسجل في المخزن مسبقاً بنفس الأرقام!")
+            # التحقق من أن الخانات الأساسية تم ملؤها
+            if not fabric_name or not pc_no_input or not lot_no_input:
+                st.error("⚠️ يرجى ملء اسم الخامة ورقم التوب ورقم اللوت على الأقل قبل الحفظ!")
+            else:
+                try:
+                    pc_no = int(pc_no_input)
+                    lot_no = int(lot_no_input)
+                    metres = float(metres_input) if metres_input else 0.0
+                    weight_kg = float(weight_input) if weight_input else 0.0
+                    
+                    roll_id = f"ROLL-{selected_supplier[:3].upper()}-{pc_no}-L{lot_no}"
+                    
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                    INSERT INTO inventory (roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')
+                    ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg))
+                    conn.commit()
+                    st.balloons()
+                    st.success(f"🎉 تم حفظ التوب كود ({roll_id}) بنجاح في المخزن!")
+                except ValueError:
+                    st.error("⚠️ يرجى التأكد من كتابة الأرقام بشكل صحيح في خانات (رقم التوب، اللوت، الأمتار، والوزن).")
+                except Exception as e:
+                    st.error("⚠️ هذا التوب مسجل في المخزن مسبقاً بنفس الأرقام!")
 
 # --- 2️⃣ صرف توب ---
 elif menu == "➖ صرف توب (Stock-Out)":
@@ -199,8 +173,8 @@ elif menu == "➖ صرف توب (Stock-Out)":
 elif menu == "🏢 إضافة/إدارة الموردين":
     st.subheader("🏢 إضافة مورد جديد")
     with st.form("add_supplier"):
-        sup_name = st.text_input("اسم المورد")
-        sup_desc = st.text_area("ملاحظات / كود نموذج الكارت")
+        sup_name = st.text_input("اسم المورد", placeholder="مثال: الباشا")
+        sup_desc = st.text_area("ملاحظات / كود نموذج الكارت", placeholder="اختياري")
         save_sup = st.form_submit_button("حفظ المورد")
         if save_sup and sup_name:
             try:
