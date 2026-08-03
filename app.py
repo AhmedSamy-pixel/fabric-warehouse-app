@@ -56,24 +56,28 @@ if 'card_data' not in st.session_state:
 if 'last_img_id' not in st.session_state:
     st.session_state.last_img_id = None
 
-# دالة قراءة الصورة باستخدام Gemini API
+# دالة قراءة الصورة باستخدام Gemini API (مع Prompt بالإنجليزية لتفادي خطأ الترميز ASCII)
 def parse_card_with_gemini(image_bytes):
     try:
         api_key = st.secrets.get("GEMINI_API_KEY", "")
         if not api_key:
+            st.error("⚠️ GEMINI_API_KEY is missing in Secrets!")
             return {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
 
         client = genai.Client(api_key=api_key)
         image = Image.open(io.BytesIO(image_bytes))
 
+        # Prompt strictly in English to prevent UTF-8 / ASCII encoding issues
         prompt = """
-        قم بقراءة كارت التوب أو كارت القماش الظاهر في الصورة بدقة واستخرج البيانات التالية فقط بنفس التنسيق:
-        Fabric: [اسم الخامة]
-        Shade: [اللون أو رقم الدرجة]
-        PC: [رقم التوب PC NO]
-        LOT: [رقم اللوت LOT NO]
-        Metres: [عدد الأمتار Metres]
-        Weight: [الوزن KGS]
+        Read the fabric card image carefully and extract the following details. 
+        Note that 'Roll No' corresponds to 'PC', 'Length' corresponds to 'Metres', and 'NW(KG)' or 'GW(KG)' corresponds to 'Weight'.
+        Output EXACTLY in this format line by line:
+        Fabric: <extracted fabric name>
+        Shade: <extracted color or shade>
+        PC: <extracted roll or PC number>
+        LOT: <extracted lot number>
+        Metres: <extracted length or meters>
+        Weight: <extracted weight in kg>
         """
 
         response = client.models.generate_content(
@@ -81,20 +85,21 @@ def parse_card_with_gemini(image_bytes):
             contents=[image, prompt]
         )
         
-        text = response.text
+        text = response.text or ""
         data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
         
         for line in text.split('\n'):
-            if 'Fabric:' in line: data["fabric"] = line.split('Fabric:')[1].strip()
-            elif 'Shade:' in line: data["shade"] = line.split('Shade:')[1].strip()
-            elif 'PC:' in line: data["pc_no"] = line.split('PC:')[1].strip()
-            elif 'LOT:' in line: data["lot_no"] = line.split('LOT:')[1].strip()
-            elif 'Metres:' in line: data["metres"] = line.split('Metres:')[1].strip()
-            elif 'Weight:' in line: data["weight"] = line.split('Weight:')[1].strip()
+            line_str = line.strip()
+            if line_str.startswith('Fabric:'): data["fabric"] = line_str.replace('Fabric:', '').strip()
+            elif line_str.startswith('Shade:'): data["shade"] = line_str.replace('Shade:', '').strip()
+            elif line_str.startswith('PC:'): data["pc_no"] = line_str.replace('PC:', '').strip()
+            elif line_str.startswith('LOT:'): data["lot_no"] = line_str.replace('LOT:', '').strip()
+            elif line_str.startswith('Metres:'): data["metres"] = line_str.replace('Metres:', '').strip()
+            elif line_str.startswith('Weight:'): data["weight"] = line_str.replace('Weight:', '').strip()
             
         return data
     except Exception as e:
-        st.error(f"خطأ في قراءة Gemini: {e}")
+        st.error(f"خطأ أثناء قراءة الصورة: {e}")
         return {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
 
 # دالة تصدير شيت الإكسل
@@ -160,7 +165,7 @@ def export_inventory_to_excel_with_images():
     output.seek(0)
     return output
 
-# ----------------- 3. إعدادات الصفحة والواجهة -----------------
+# ----------------- 3. إعدادات الواجهة -----------------
 st.set_page_config(page_title="نظام تتبع الأقمشة", page_icon="🧵", layout="centered")
 
 st.markdown("""
@@ -198,12 +203,10 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
 
     img_saved_path = ""
 
-    # معالجة الصورة وفحص تغييرها لتحديث الـ State
     if img_file is not None:
         image_bytes = img_file.getvalue()
         current_img_id = hash(image_bytes)
         
-        # تنفيذ القراءة فقط إذا تم التقاط صورة جديدة
         if st.session_state.last_img_id != current_img_id:
             with st.spinner("🤖 جاري قراءة واستخراج بيانات الكارت عبر Gemini..."):
                 extracted = parse_card_with_gemini(image_bytes)
@@ -213,7 +216,6 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
 
         st.image(image_bytes, caption="معاينة كارت التوب الملتقط", use_column_width=True)
         
-        # حفظ الصورة للمخزن
         temp_img_name = f"roll_{selected_supplier}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
         img_saved_path = os.path.join('roll_images', temp_img_name)
         with open(img_saved_path, 'wb') as f:
@@ -221,14 +223,13 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
 
     st.markdown("### 📝 بيانات التوب لتأكيد الحفظ")
     
-    # ربط المدخلات بالـ session_state مباشرة بغير استخدام form مقيد
     fabric_name = st.text_input("اسم الخامة (Fabric)", value=st.session_state.card_data["fabric"], key="input_fabric")
     color_shade = st.text_input("اللون / الدرجة (Shade)", value=st.session_state.card_data["shade"], key="input_shade")
     
     c1, c2 = st.columns(2)
     with c1:
-        pc_no_input = st.text_input("رقم التوب (PC NO.)", value=st.session_state.card_data["pc_no"], key="input_pc")
-        metres_input = st.text_input("الأمتار (Metres)", value=st.session_state.card_data["metres"], key="input_metres")
+        pc_no_input = st.text_input("رقم التوب (PC / Roll NO.)", value=st.session_state.card_data["pc_no"], key="input_pc")
+        metres_input = st.text_input("الأمتار (Metres / Length)", value=st.session_state.card_data["metres"], key="input_metres")
     with c2:
         lot_no_input = st.text_input("رقم اللوت (LOT NO.)", value=st.session_state.card_data["lot_no"], key="input_lot")
         weight_input = st.text_input("الوزن (Kgs)", value=st.session_state.card_data["weight"], key="input_weight")
@@ -252,7 +253,6 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
             ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
             conn.commit()
             
-            # إعادة تعيين البيانات
             st.session_state.card_data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
             st.session_state.last_img_id = None
             
