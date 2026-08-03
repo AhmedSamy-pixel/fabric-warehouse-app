@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import sqlite3
 import pandas as pd
 import streamlit as st
@@ -34,7 +35,7 @@ def init_db():
         date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
-    cursor.execute("INSERT OR IGNORE INTO suppliers (supplier_name, description) VALUES ('El-basha', 'FQ-QC-57')")
+    cursor.execute("INSERT OR IGNORE INTO suppliers (supplier_name, description) VALUES ('El-basha', 'Standard Tag')")
     conn.commit()
     conn.close()
 
@@ -44,46 +45,36 @@ if not os.path.exists('roll_images'):
     os.makedirs('roll_images')
 
 # ----------------- 2. Session State Setup -----------------
-if 'card_data' not in st.session_state:
-    st.session_state.card_data = {
-        "fabric": "",
-        "shade": "",
-        "pc_no": "",
-        "lot_no": "",
-        "metres": "",
-        "weight": ""
-    }
-if 'last_img_id' not in st.session_state:
-    st.session_state.last_img_id = None
+if 'fabric' not in st.session_state: st.session_state.fabric = ""
+if 'shade' not in st.session_state: st.session_state.shade = ""
+if 'pc_no' not in st.session_state: st.session_state.pc_no = ""
+if 'lot_no' not in st.session_state: st.session_state.lot_no = ""
+if 'metres' not in st.session_state: st.session_state.metres = ""
+if 'weight' not in st.session_state: st.session_state.weight = ""
 
-# Gemini OCR Reader Engine
+# Gemini OCR Function using JSON
 def parse_card_with_gemini(image_bytes):
-    data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
     try:
         api_key = st.secrets.get("GEMINI_API_KEY", "")
         if not api_key:
-            return data
+            st.error("Missing GEMINI_API_KEY in Streamlit Secrets!")
+            return None
 
         client = genai.Client(api_key=api_key)
         image = Image.open(io.BytesIO(image_bytes))
 
-        # Direct prompt mapped to standard fabric card layouts
         prompt = """
-        Analyze this fabric roll tag/label and extract the exact printed text values:
-        - Fabric Name (e.g. INTERLOCKP1, Rosetta) -> output as 'Fabric'
-        - Color (e.g. TEAL, Black) -> output as 'Shade'
-        - Roll No or PC No (e.g. 6) -> output as 'PC'
-        - Lot No (e.g. 0209) -> output as 'LOT'
-        - Length or Meters (e.g. 88) -> output as 'Metres'
-        - NW(KG) or Weight (e.g. 21.1) -> output as 'Weight'
+        You are an expert OCR system for fabric warehouse cards.
+        Analyze the image and extract the text for these exact fields:
+        - "fabric": Name of the fabric (e.g. INTERLOCKP1, Single Jersey)
+        - "shade": Color or shade name (e.g. TEAL, Navy)
+        - "pc_no": Roll number or PC No (e.g. 6)
+        - "lot_no": Lot number (e.g. 0209)
+        - "metres": Length in meters or yards (e.g. 88)
+        - "weight": Weight in KGs, Net Weight NW or Gross Weight GW (e.g. 21.1)
 
-        Respond strictly in this line-by-line format:
-        Fabric: <value>
-        Shade: <value>
-        PC: <value>
-        LOT: <value>
-        Metres: <value>
-        Weight: <value>
+        Return ONLY a raw JSON object with these keys: "fabric", "shade", "pc_no", "lot_no", "metres", "weight".
+        Do not add Markdown backticks or extra text.
         """
 
         response = client.models.generate_content(
@@ -91,30 +82,19 @@ def parse_card_with_gemini(image_bytes):
             contents=[image, prompt]
         )
         
-        raw_text = response.text if response and response.text else ""
-        
-        for line in raw_text.splitlines():
-            line_clean = line.strip()
-            if line_clean.lower().startswith('fabric:'):
-                data["fabric"] = line_clean.split(':', 1)[1].strip()
-            elif line_clean.lower().startswith('shade:'):
-                data["shade"] = line_clean.split(':', 1)[1].strip()
-            elif line_clean.lower().startswith('pc:'):
-                data["pc_no"] = line_clean.split(':', 1)[1].strip()
-            elif line_clean.lower().startswith('lot:'):
-                data["lot_no"] = line_clean.split(':', 1)[1].strip()
-            elif line_clean.lower().startswith('metres:'):
-                data["metres"] = line_clean.split(':', 1)[1].strip()
-            elif line_clean.lower().startswith('weight:'):
-                data["weight"] = line_clean.split(':', 1)[1].strip()
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text.replace("```", "").strip()
 
+        data = json.loads(raw_text)
         return data
     except Exception as err:
-        # Prevent ASCII / UTF-8 encoding crashes
-        print("Error parsing image:", str(err).encode('ascii', 'ignore').decode('ascii'))
-        return data
+        st.error(f"Error reading tag image: {err}")
+        return None
 
-# Export to Excel with Embedded Images
+# Export Inventory to Excel
 def export_inventory_to_excel_with_images():
     conn = sqlite3.connect('warehouse_system.db')
     df = pd.read_sql_query("SELECT roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, image_path, status, date_added FROM inventory", conn)
@@ -177,8 +157,8 @@ def export_inventory_to_excel_with_images():
     output.seek(0)
     return output
 
-# ----------------- 3. Streamlit Interface (English Default) -----------------
-st.set_page_config(page_title="Fabric Warehouse System", page_icon="🧵", layout="centered")
+# ----------------- 3. UI Implementation -----------------
+st.set_page_config(page_title="Fabric Tracking System", page_icon="🧵", layout="centered")
 
 st.markdown("""
     <style>
@@ -217,36 +197,42 @@ if menu == "📸 Stock-In (Capture Roll)":
 
     if img_file is not None:
         image_bytes = img_file.getvalue()
-        current_img_id = hash(image_bytes)
+        st.image(image_bytes, caption="Captured Tag Preview", use_column_width=True)
         
-        if st.session_state.last_img_id != current_img_id:
-            with st.spinner("Analyzing image with Gemini OCR..."):
+        # Action button to trigger OCR explicitly
+        if st.button("🔍 Extract Tag Data with Gemini OCR"):
+            with st.spinner("Extracting data..."):
                 extracted = parse_card_with_gemini(image_bytes)
-                st.session_state.card_data = extracted
-                st.session_state.last_img_id = current_img_id
+                if extracted:
+                    st.session_state.fabric = str(extracted.get("fabric", ""))
+                    st.session_state.shade = str(extracted.get("shade", ""))
+                    st.session_state.pc_no = str(extracted.get("pc_no", ""))
+                    st.session_state.lot_no = str(extracted.get("lot_no", ""))
+                    st.session_state.metres = str(extracted.get("metres", ""))
+                    st.session_state.weight = str(extracted.get("weight", ""))
+                    st.success("Data Extracted Successfully!")
+                    st.rerun()
 
-        st.image(image_bytes, caption="Captured Tag Image", use_column_width=True)
-        
         temp_img_name = f"roll_{selected_supplier}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
         img_saved_path = os.path.join('roll_images', temp_img_name)
         with open(img_saved_path, 'wb') as f:
             f.write(image_bytes)
 
-    st.markdown("### 📝 Roll Specifications")
+    st.markdown("### 📝 Confirm Roll Specifications")
     
-    fabric_name = st.text_input("Fabric Name", value=st.session_state.card_data["fabric"], key="input_fabric")
-    color_shade = st.text_input("Color / Shade", value=st.session_state.card_data["shade"], key="input_shade")
+    fabric_name = st.text_input("Fabric Name", value=st.session_state.fabric)
+    color_shade = st.text_input("Color / Shade", value=st.session_state.shade)
     
     c1, c2 = st.columns(2)
     with c1:
-        pc_no_input = st.text_input("Roll / PC No.", value=st.session_state.card_data["pc_no"], key="input_pc")
-        metres_input = st.text_input("Metres / Length", value=st.session_state.card_data["metres"], key="input_metres")
+        pc_no_input = st.text_input("Roll / PC No.", value=st.session_state.pc_no)
+        metres_input = st.text_input("Metres / Length", value=st.session_state.metres)
     with c2:
-        lot_no_input = st.text_input("Lot No.", value=st.session_state.card_data["lot_no"], key="input_lot")
-        weight_input = st.text_input("Weight (KGs)", value=st.session_state.card_data["weight"], key="input_weight")
+        lot_no_input = st.text_input("Lot No.", value=st.session_state.lot_no)
+        weight_input = st.text_input("Weight (KGs)", value=st.session_state.weight)
         
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("✅ Confirm & Save Roll to Warehouse"):
+    if st.button("✅ Confirm & Save Roll to Inventory"):
         pc_str = pc_no_input.strip() if pc_no_input else "0"
         lot_str = lot_no_input.strip() if lot_no_input else "0"
         
@@ -264,23 +250,28 @@ if menu == "📸 Stock-In (Capture Roll)":
             ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
             conn.commit()
             
-            st.session_state.card_data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
-            st.session_state.last_img_id = None
+            # Clear inputs
+            st.session_state.fabric = ""
+            st.session_state.shade = ""
+            st.session_state.pc_no = ""
+            st.session_state.lot_no = ""
+            st.session_state.metres = ""
+            st.session_state.weight = ""
             
             st.balloons()
-            st.success(f"Roll Saved Successfully! ID: ({roll_id})")
+            st.success(f"Saved Successfully! Roll ID: ({roll_id})")
         except Exception as e:
-            st.error(f"Error saving roll: {e}")
+            st.error(f"Save error: {e}")
 
 # --- 2️⃣ Stock-Out ---
 elif menu == "➖ Stock-Out (Dispatch Roll)":
-    st.subheader("Dispatched Roll")
+    st.subheader("Dispatch Roll")
     stock_df = pd.read_sql_query("SELECT roll_id, supplier_name, fabric_name, color_shade, metres FROM inventory WHERE status='IN_STOCK'", conn)
     
     if stock_df.empty:
         st.info("No rolls currently available in stock.")
     else:
-        selected_roll = st.selectbox("Select Roll ID to dispatch:", stock_df['roll_id'].tolist())
+        selected_roll = st.selectbox("Select Roll ID:", stock_df['roll_id'].tolist())
         roll_details = stock_df[stock_df['roll_id'] == selected_roll].iloc[0]
         st.warning(f"Details: {roll_details['fabric_name']} | Color: {roll_details['color_shade']} | {roll_details['metres']} Metres")
         
@@ -294,8 +285,8 @@ elif menu == "➖ Stock-Out (Dispatch Roll)":
 elif menu == "🏢 Manage Suppliers":
     st.subheader("Add New Supplier")
     with st.form("add_supplier"):
-        sup_name = st.text_input("Supplier Name", placeholder="e.g. El-basha")
-        sup_desc = st.text_area("Notes", placeholder="Optional")
+        sup_name = st.text_input("Supplier Name")
+        sup_desc = st.text_area("Notes")
         save_sup = st.form_submit_button("Save Supplier")
         if save_sup and sup_name:
             try:
@@ -304,7 +295,7 @@ elif menu == "🏢 Manage Suppliers":
                 conn.commit()
                 st.success(f"Supplier '{sup_name}' added!")
             except:
-                st.error("Supplier already exists!")
+                st.error("Supplier exists!")
                 
     st.dataframe(pd.read_sql_query("SELECT supplier_name AS 'Supplier Name', description AS 'Notes' FROM suppliers", conn), use_container_width=True)
 
@@ -314,7 +305,7 @@ elif menu == "📊 Inventory Sheet & Excel":
     
     excel_data = export_inventory_to_excel_with_images()
     st.download_button(
-        label="📥 Download Complete Excel (With Pictures)",
+        label="📥 Download Excel File (With Embedded Pictures)",
         data=excel_data,
         file_name=f"Warehouse_Inventory_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
