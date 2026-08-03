@@ -45,15 +45,16 @@ init_db()
 if not os.path.exists('roll_images'):
     os.makedirs('roll_images')
 
-# ----------------- 2. Session State Setup -----------------
+# ----------------- 2. Session State Management -----------------
 if 'fabric' not in st.session_state: st.session_state.fabric = ""
 if 'shade' not in st.session_state: st.session_state.shade = ""
 if 'pc_no' not in st.session_state: st.session_state.pc_no = ""
 if 'lot_no' not in st.session_state: st.session_state.lot_no = ""
 if 'metres' not in st.session_state: st.session_state.metres = ""
 if 'weight' not in st.session_state: st.session_state.weight = ""
+if 'last_img_bytes_hash' not in st.session_state: st.session_state.last_img_bytes_hash = None
 
-# Gemini OCR Function - Fully Encoding-Safe
+# Gemini OCR Function
 def parse_card_with_gemini(image_bytes):
     try:
         api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -63,7 +64,6 @@ def parse_card_with_gemini(image_bytes):
 
         client = genai.Client(api_key=api_key)
 
-        # Pass image safely as bytes via types.Part to avoid PIL/ASCII encoding issues
         image_part = types.Part.from_bytes(
             data=image_bytes,
             mime_type="image/jpeg"
@@ -77,7 +77,7 @@ def parse_card_with_gemini(image_bytes):
             "- lot_no: Lot Number\n"
             "- metres: Length or Meters\n"
             "- weight: Weight in KGs\n\n"
-            "Respond ONLY with a JSON object containing keys: fabric, shade, pc_no, lot_no, metres, weight."
+            "Respond ONLY with a valid raw JSON object with keys: fabric, shade, pc_no, lot_no, metres, weight."
         )
 
         response = client.models.generate_content(
@@ -87,18 +87,16 @@ def parse_card_with_gemini(image_bytes):
 
         raw_text = response.text.strip() if response and response.text else ""
         
-        # Clean potential markdown formatting
         if raw_text.startswith("```json"):
             raw_text = raw_text.replace("```json", "").replace("```", "").strip()
         elif raw_text.startswith("```"):
             raw_text = raw_text.replace("```", "").strip()
 
-        data = json.loads(raw_text)
-        return data
+        return json.loads(raw_text)
 
     except Exception as err:
         error_msg = str(err).encode('ascii', 'ignore').decode('ascii')
-        st.error(f"Error parsing image with Gemini: {error_msg}")
+        st.error(f"Error parsing image: {error_msg}")
         return None
 
 # Export Inventory to Excel
@@ -164,14 +162,17 @@ def export_inventory_to_excel_with_images():
     output.seek(0)
     return output
 
-# ----------------- 3. UI Implementation -----------------
+# ----------------- 3. UI Setup -----------------
 st.set_page_config(page_title="Fabric Tracking System", page_icon="🧵", layout="centered")
 
+# CSS to optimize layout and attempt back-camera preference on mobile browsers
 st.markdown("""
     <style>
     .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.2em; font-weight: bold; font-size: 16px; }
     .main-title { text-align: center; color: #1E88E5; font-size: 22px; font-weight: bold; margin-bottom: 10px; }
+    /* Video stream mirror fix for back camera view */
+    video { transform: scaleX(1) !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -186,7 +187,7 @@ menu = st.sidebar.radio("Main Menu", [
 
 conn = sqlite3.connect('warehouse_system.db')
 
-# --- 1️⃣ Stock-In ---
+# --- 1️⃣ Stock-In Page ---
 if menu == "📸 Stock-In (Capture Roll)":
     suppliers_df = pd.read_sql_query("SELECT supplier_name FROM suppliers", conn)
     supplier_list = suppliers_df['supplier_name'].tolist() if not suppliers_df.empty else ['El-basha']
@@ -196,18 +197,21 @@ if menu == "📸 Stock-In (Capture Roll)":
     
     img_file = None
     if "📸 Camera" in source_type:
+        # st.camera_input natively triggers standard system camera dialog on phones
         img_file = st.camera_input("Take Roll Tag Photo")
     else:
         img_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg", "webp"])
 
     img_saved_path = ""
 
+    # Automatic execution upon receiving new image
     if img_file is not None:
         image_bytes = img_file.getvalue()
-        st.image(image_bytes, caption="Captured Tag Preview", use_column_width=True)
-        
-        if st.button("🔍 Extract Tag Data with Gemini OCR"):
-            with st.spinner("Extracting data..."):
+        current_hash = hash(image_bytes)
+
+        # Execute OCR automatically only if image changed
+        if st.session_state.last_img_bytes_hash != current_hash:
+            with st.spinner("🤖 Auto-processing tag image with Gemini OCR..."):
                 extracted = parse_card_with_gemini(image_bytes)
                 if extracted:
                     st.session_state.fabric = str(extracted.get("fabric", ""))
@@ -216,8 +220,10 @@ if menu == "📸 Stock-In (Capture Roll)":
                     st.session_state.lot_no = str(extracted.get("lot_no", ""))
                     st.session_state.metres = str(extracted.get("metres", ""))
                     st.session_state.weight = str(extracted.get("weight", ""))
-                    st.success("Data Extracted Successfully!")
+                    st.session_state.last_img_bytes_hash = current_hash
                     st.rerun()
+
+        st.image(image_bytes, caption="Captured Tag Preview", use_column_width=True)
 
         temp_img_name = f"roll_{selected_supplier}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
         img_saved_path = os.path.join('roll_images', temp_img_name)
@@ -226,6 +232,7 @@ if menu == "📸 Stock-In (Capture Roll)":
 
     st.markdown("### 📝 Confirm Roll Specifications")
     
+    # Text inputs populated directly from st.session_state
     fabric_name = st.text_input("Fabric Name", value=st.session_state.fabric)
     color_shade = st.text_input("Color / Shade", value=st.session_state.shade)
     
@@ -256,19 +263,21 @@ if menu == "📸 Stock-In (Capture Roll)":
             ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
             conn.commit()
             
+            # Reset form state
             st.session_state.fabric = ""
             st.session_state.shade = ""
             st.session_state.pc_no = ""
             st.session_state.lot_no = ""
             st.session_state.metres = ""
             st.session_state.weight = ""
+            st.session_state.last_img_bytes_hash = None
             
             st.balloons()
             st.success(f"Saved Successfully! Roll ID: ({roll_id})")
         except Exception as e:
             st.error(f"Save error: {e}")
 
-# --- 2️⃣ Stock-Out ---
+# --- 2️⃣ Stock-Out Page ---
 elif menu == "➖ Stock-Out (Dispatch Roll)":
     st.subheader("Dispatch Roll")
     stock_df = pd.read_sql_query("SELECT roll_id, supplier_name, fabric_name, color_shade, metres FROM inventory WHERE status='IN_STOCK'", conn)
@@ -286,7 +295,7 @@ elif menu == "➖ Stock-Out (Dispatch Roll)":
             conn.commit()
             st.success(f"Roll {selected_roll} dispatched successfully!")
 
-# --- 3️⃣ Manage Suppliers ---
+# --- 3️⃣ Manage Suppliers Page ---
 elif menu == "🏢 Manage Suppliers":
     st.subheader("Add New Supplier")
     with st.form("add_supplier"):
@@ -304,7 +313,7 @@ elif menu == "🏢 Manage Suppliers":
                 
     st.dataframe(pd.read_sql_query("SELECT supplier_name AS 'Supplier Name', description AS 'Notes' FROM suppliers", conn), use_container_width=True)
 
-# --- 4️⃣ Inventory Sheet ---
+# --- 4️⃣ Inventory Sheet Page ---
 elif menu == "📊 Inventory Sheet & Excel":
     st.subheader("Warehouse Inventory & Export")
     
