@@ -8,7 +8,7 @@ import openpyxl
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from google import genai
 
-# ----------------- 1. تهيئة قاعدة البيانات والتطبيقات -----------------
+# ----------------- 1. تهيئة قاعدة البيانات -----------------
 def init_db():
     conn = sqlite3.connect('warehouse_system.db')
     cursor = conn.cursor()
@@ -40,31 +40,40 @@ def init_db():
 
 init_db()
 
-# مجلد الصور
 if not os.path.exists('roll_images'):
     os.makedirs('roll_images')
+
+# ----------------- 2. تهيئة الـ Session State -----------------
+if 'card_data' not in st.session_state:
+    st.session_state.card_data = {
+        "fabric": "",
+        "shade": "",
+        "pc_no": "",
+        "lot_no": "",
+        "metres": "",
+        "weight": ""
+    }
+if 'last_img_id' not in st.session_state:
+    st.session_state.last_img_id = None
 
 # دالة قراءة الصورة باستخدام Gemini API
 def parse_card_with_gemini(image_bytes):
     try:
-        # استخدم مفتاح Gemini API المخزن في Secret أو قم بوضعه هنا
         api_key = st.secrets.get("GEMINI_API_KEY", "")
         if not api_key:
-            # في حال عدم وجود مفتاح بالـ secrets، يرجى كتابته أو توفيره
             return {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
 
         client = genai.Client(api_key=api_key)
         image = Image.open(io.BytesIO(image_bytes))
 
         prompt = """
-        قم بقراءة كارت التوب أو كارت القماش الظاهر في الصورة بدقة واستخرج البيانات التالية فقط في شكل نص محدد بالسطور:
-        Fabric: [اسم الخامة مثل Rosetta أو Milton]
+        قم بقراءة كارت التوب أو كارت القماش الظاهر في الصورة بدقة واستخرج البيانات التالية فقط بنفس التنسيق:
+        Fabric: [اسم الخامة]
         Shade: [اللون أو رقم الدرجة]
         PC: [رقم التوب PC NO]
         LOT: [رقم اللوت LOT NO]
         Metres: [عدد الأمتار Metres]
         Weight: [الوزن KGS]
-        إذا لم تجد قيمة اكتب مكانها فارغ.
         """
 
         response = client.models.generate_content(
@@ -85,10 +94,10 @@ def parse_card_with_gemini(image_bytes):
             
         return data
     except Exception as e:
-        st.warning(f"ملاحظة حول القراءة التلقائية: {e}")
+        st.error(f"خطأ في قراءة Gemini: {e}")
         return {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
 
-# دالة تصدير شيت الإكسل بالصور
+# دالة تصدير شيت الإكسل
 def export_inventory_to_excel_with_images():
     conn = sqlite3.connect('warehouse_system.db')
     df = pd.read_sql_query("SELECT roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, image_path, status, date_added FROM inventory", conn)
@@ -129,7 +138,6 @@ def export_inventory_to_excel_with_images():
             try:
                 img = Image.open(img_path)
                 img.thumbnail((80, 80))
-                
                 img_byte_arr = io.BytesIO()
                 img.save(img_byte_arr, format='PNG')
                 img_byte_arr.seek(0)
@@ -152,22 +160,18 @@ def export_inventory_to_excel_with_images():
     output.seek(0)
     return output
 
-# ----------------- 2. الواجهة وتصغير المساحة العلوية -----------------
+# ----------------- 3. إعدادات الصفحة والواجهة -----------------
 st.set_page_config(page_title="نظام تتبع الأقمشة", page_icon="🧵", layout="centered")
 
-# تقليل الهوامش والمسافات الفارغة في أعلى الصفحة لتبدأ القراءة والزر فوراً
 st.markdown("""
     <style>
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 1rem !important;
-    }
+    .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3em; font-weight: bold; font-size: 16px; }
     .main-title { text-align: center; color: #1E88E5; font-size: 22px; font-weight: bold; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">🧵 إدخال ومتابعة مخزن الأقمشة</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🧵 إدارة مخزن الأقمشة</div>', unsafe_allow_html=True)
 
 menu = st.sidebar.radio("القائمة الرئيسية", [
     "📸 إضافة توب للمخزن (Stock-In)", 
@@ -192,60 +196,70 @@ if menu == "📸 إضافة توب للمخزن (Stock-In)":
     else:
         img_file = st.file_uploader("اختر الصورة", type=["jpg", "png", "jpeg", "webp"])
 
-    parsed_data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
     img_saved_path = ""
 
+    # معالجة الصورة وفحص تغييرها لتحديث الـ State
     if img_file is not None:
         image_bytes = img_file.getvalue()
-        st.image(image_bytes, caption="معاينة كارت التوب", use_column_width=True)
+        current_img_id = hash(image_bytes)
         
-        with st.spinner("🤖 جاري قراءة واستخراج بيانات الكارت عبر الذكاء الاصطناعي (Gemini)..."):
-            parsed_data = parse_card_with_gemini(image_bytes)
-            
+        # تنفيذ القراءة فقط إذا تم التقاط صورة جديدة
+        if st.session_state.last_img_id != current_img_id:
+            with st.spinner("🤖 جاري قراءة واستخراج بيانات الكارت عبر Gemini..."):
+                extracted = parse_card_with_gemini(image_bytes)
+                st.session_state.card_data = extracted
+                st.session_state.last_img_id = current_img_id
+            st.success("✅ تم استخراج البيانات بنجاح!")
+
+        st.image(image_bytes, caption="معاينة كارت التوب الملتقط", use_column_width=True)
+        
+        # حفظ الصورة للمخزن
         temp_img_name = f"roll_{selected_supplier}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.png"
         img_saved_path = os.path.join('roll_images', temp_img_name)
         with open(img_saved_path, 'wb') as f:
             f.write(image_bytes)
 
-    st.markdown("### 📝 بيانات التوب للتأكيد")
+    st.markdown("### 📝 بيانات التوب لتأكيد الحفظ")
     
-    with st.form("add_roll_form", clear_on_submit=True):
-        fabric_name = st.text_input("اسم الخامة (Fabric)", value=parsed_data["fabric"], placeholder="اسم الخامة")
-        color_shade = st.text_input("اللون / الدرجة (Shade)", value=parsed_data["shade"], placeholder="اللون")
+    # ربط المدخلات بالـ session_state مباشرة بغير استخدام form مقيد
+    fabric_name = st.text_input("اسم الخامة (Fabric)", value=st.session_state.card_data["fabric"], key="input_fabric")
+    color_shade = st.text_input("اللون / الدرجة (Shade)", value=st.session_state.card_data["shade"], key="input_shade")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        pc_no_input = st.text_input("رقم التوب (PC NO.)", value=st.session_state.card_data["pc_no"], key="input_pc")
+        metres_input = st.text_input("الأمتار (Metres)", value=st.session_state.card_data["metres"], key="input_metres")
+    with c2:
+        lot_no_input = st.text_input("رقم اللوت (LOT NO.)", value=st.session_state.card_data["lot_no"], key="input_lot")
+        weight_input = st.text_input("الوزن (Kgs)", value=st.session_state.card_data["weight"], key="input_weight")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            pc_no_input = st.text_input("رقم التوب (PC NO.)", value=parsed_data["pc_no"], placeholder="رقم التوب")
-            metres_input = st.text_input("الأمتار (Metres)", value=parsed_data["metres"], placeholder="الأمتار")
-        with c2:
-            lot_no_input = st.text_input("رقم اللوت (LOT NO.)", value=parsed_data["lot_no"], placeholder="رقم اللوت")
-            weight_input = st.text_input("الوزن (Kgs)", value=parsed_data["weight"], placeholder="الوزن")
-            
-        submit_btn = st.form_submit_button("✅ تأكيد وحفظ التوب في المخزن والإكسل")
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("✅ تأكيد وحفظ التوب في المخزن والإكسل"):
+        pc_str = pc_no_input.strip() if pc_no_input else "0"
+        lot_str = lot_no_input.strip() if lot_no_input else "0"
         
-        if submit_btn:
-            # التأكد من عدم ترك الحقول الأساسية فارغة لمنع إنتاج مفاتيح مكررة بالخطأ
-            pc_str = pc_no_input.strip() if pc_no_input else "0"
-            lot_str = lot_no_input.strip() if lot_no_input else "0"
+        time_tag = pd.Timestamp.now().strftime('%M%S')
+        roll_id = f"ROLL-{selected_supplier[:3].upper()}-P{pc_str}-L{lot_str}-{time_tag}"
+        
+        try:
+            metres = float(metres_input) if metres_input else 0.0
+            weight_kg = float(weight_input) if weight_input else 0.0
             
-            # إنشاء كود فريد للتوب يضمن عدم التكرار الخاطئ
-            time_tag = pd.Timestamp.now().strftime('%M%S')
-            roll_id = f"ROLL-{selected_supplier[:3].upper()}-P{pc_str}-L{lot_str}-{time_tag}"
+            cursor = conn.cursor()
+            cursor.execute('''
+            INSERT INTO inventory (roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, image_path, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')
+            ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
+            conn.commit()
             
-            try:
-                metres = float(metres_input) if metres_input else 0.0
-                weight_kg = float(weight_input) if weight_input else 0.0
-                
-                cursor = conn.cursor()
-                cursor.execute('''
-                INSERT INTO inventory (roll_id, supplier_name, fabric_name, color_shade, pc_no, lot_no, metres, weight_kg, image_path, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'IN_STOCK')
-                ''', (roll_id, selected_supplier, fabric_name, color_shade, pc_str, lot_str, metres, weight_kg, img_saved_path))
-                conn.commit()
-                st.balloons()
-                st.success(f"🎉 تم حفظ التوب بنجاح في المخزن وشيت الإكسل! الكود: ({roll_id})")
-            except Exception as e:
-                st.error(f"⚠️ خطأ أثناء الإضافة: {e}")
+            # إعادة تعيين البيانات
+            st.session_state.card_data = {"fabric": "", "shade": "", "pc_no": "", "lot_no": "", "metres": "", "weight": ""}
+            st.session_state.last_img_id = None
+            
+            st.balloons()
+            st.success(f"🎉 تم حفظ التوب بنجاح! كود التوب: ({roll_id})")
+        except Exception as e:
+            st.error(f"⚠️ خطأ أثناء الإضافة: {e}")
 
 # --- 2️⃣ صرف توب ---
 elif menu == "➖ صرف توب (Stock-Out)":
